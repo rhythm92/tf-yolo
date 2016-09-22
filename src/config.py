@@ -39,13 +39,13 @@ def model_config():
   cfg.BOXES = 2
 
   # batch size
-  cfg.BATCH_SIZE = 8
+  cfg.BATCH_SIZE = 10
 
   # image width
-  cfg.IMAGE_WIDTH = 244
+  cfg.IMAGE_WIDTH = 224
 
   # image height
-  cfg.IMAGE_HEIGHT = 244
+  cfg.IMAGE_HEIGHT = 224
 
   # Only plot boxes with probability higher than this threshold
   cfg.PROB_THRESH = 0.2
@@ -77,5 +77,14 @@ def model_config():
 
   # moving average decay, used to visualize parameter evolution
   cfg.MOVING_AVERAGE_DECAY = 0.9999
+
+  # wether to load pre-trained model
+  cfg.LOAD_PRETRAINED_MODEL = True
+
+  # path to load the pre-trained model
+  cfg.PRETRAINED_MODEL_PATH = ''
+
+  # print log to console in debug mode
+  cfg.DEBUG_MODE = False
 
   return cfg

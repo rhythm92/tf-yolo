@@ -137,23 +137,25 @@ class pascal_voc(imdb):
       y_centers = np.arange(mc.GHEIGHT)
 
       # normalize bounding boxes
-      bbox = self._rois[i]
+      orig_bbox = self._rois[i]
       gidx = []
       cls_idx = []
-      for b in bbox:
-        b[0] *= mc.GWIDTH/mc.IMAGE_WIDTH
+      bbox = []
+      for b in orig_bbox:
+        b[0] *= float(mc.GWIDTH)/orig_w
         gidx_x = np.argmin(abs(b[0] - x_centers))
         b[0] -= x_centers[gidx_x]
 
-        b[1] *= mc.GHEIGHT/mc.IMAGE_HEIGHT
+        b[1] *= float(mc.GHEIGHT)/orig_h
         gidx_y = np.argmin(abs(b[1] - y_centers))
         b[1] -= y_centers[gidx_y]
 
-        b[2] = np.sqrt(b[2]/orig_w)
-        b[3] = np.sqrt(b[3]/orig_h)
+        b[2] = np.sqrt(float(b[2])/orig_w)
+        b[3] = np.sqrt(float(b[3])/orig_h)
 
         cls_idx.append(b[4])
         gidx.append([gidx_x, gidx_y])
+        bbox.append([b[0], b[1], b[2], b[3]])
 
       images.append(im)
       bboxes.append(bbox)

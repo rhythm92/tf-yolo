@@ -16,7 +16,7 @@ import numpy as np
 import tensorflow as tf
 
 
-def _activation_summary(x):
+def _activation_summary(x, layer_name):
   """Helper to create summaries for activations.
 
   Creates a summary that provides a histogram of activations.
@@ -29,9 +29,17 @@ def _activation_summary(x):
   """
   # Remove 'tower_[0-9]/' from the name in case this is a multi-GPU training
   # session. This helps the clarity of presentation on tensorboard.
-  tensor_name = re.sub('%s_[0-9]*/' % TOWER_NAME, '', x.op.name)
-  tf.histogram_summary(tensor_name + '/activations', x)
-  tf.scalar_summary(tensor_name + '/sparsity', tf.nn.zero_fraction(x))
+  # tensor_name = re.sub('%s_[0-9]*/' % TOWER_NAME, '', x.op.name)
+  tf.histogram_summary(
+      'activation_summary/'+layer_name + '/activations', x)
+  tf.scalar_summary(
+      'activation_summary/'+layer_name + '/sparsity', tf.nn.zero_fraction(x))
+  tf.scalar_summary(
+      'activation_summary/'+layer_name + '/average', tf.reduce_mean(x))
+  tf.scalar_summary(
+      'activation_summary/'+layer_name + '/max', tf.reduce_max(x))
+  tf.scalar_summary(
+      'activation_summary/'+layer_name + '/min', tf.reduce_min(x))
 
 def _add_loss_summaries(total_loss):
   """Add summaries for losses in Yolo.
@@ -57,7 +65,7 @@ def _add_loss_summaries(total_loss):
 
   return loss_averages_op
 
-def _variable_on_cpu(name, shape, initializer):
+def _variable_on_cpu(name, shape, initializer, trainable=True):
   """Helper to create a Variable stored on CPU memory.
 
   Args:
@@ -74,10 +82,16 @@ def _variable_on_cpu(name, shape, initializer):
     # tf.Variable() in order to share variables across multiple GPU training runs.
     # If we only ran this model on a single GPU, we could simplify this function
     # by replacing all instances of tf.get_variable() with tf.Variable().
-    var = tf.get_variable(name, shape, initializer=initializer, dtype=dtype)
+    if not callable(initializer):
+      var = tf.get_variable(name, initializer=initializer, trainable=trainable)
+    else:
+      var = tf.get_variable(
+          name, shape, initializer=initializer, dtype=dtype,
+          trainable=trainable)
   return var
 
-def _variable_with_weight_decay(name, shape, stddev, wd):
+def _variable_with_weight_decay(name, shape, stddev, wd, initializer=None,
+                                trainable=True):
   """Helper to create an initialized Variable with weight decay.
 
   Note that the Variable is initialized with a truncated normal distribution.
@@ -94,11 +108,10 @@ def _variable_with_weight_decay(name, shape, stddev, wd):
     Variable Tensor
   """
   dtype = tf.float32
-  var = _variable_on_cpu(
-      name,
-      shape,
-      tf.truncated_normal_initializer(stddev=stddev, dtype=dtype))
-  if wd is not None:
+  if initializer is None:
+    initializer = tf.truncated_normal_initializer(stddev=stddev, dtype=dtype)
+  var = _variable_on_cpu(name, shape, initializer, trainable)
+  if wd is not None and trainable:
     weight_decay = tf.mul(tf.nn.l2_loss(var), wd, name='weight_loss')
     tf.add_to_collection('losses', weight_decay)
   return var
@@ -155,17 +168,20 @@ class YoloModel:
           [mc.BATCH_SIZE, mc.GWIDTH, mc.GHEIGHT, mc.CLASSES],
           name='pred_class_probs'
       )
+      _activation_summary(pred_class_probs, 'pred_class_probs')
       num_confidence_scores = mc.GWIDTH*mc.GHEIGHT
       pred_conf = tf.reshape(
           tf.slice(preds, [0, num_class_probs], [-1, num_confidence_scores]),
           [mc.BATCH_SIZE, mc.GWIDTH, mc.GHEIGHT],
           name='pred_confidence_score'
       )
+      _activation_summary(pred_conf, 'pred_conf')
       pred_boxes = tf.reshape(
           tf.slice(preds, [0, num_class_probs+num_confidence_scores], [-1, -1]),
           [mc.BATCH_SIZE, mc.GWIDTH, mc.GHEIGHT, 4],
           name='pred_bbox'
       )
+      _activation_summary(pred_boxes, 'pred_bbox')
 
     with tf.variable_scope('class_regression') as scope:
       cls_loss = tf.reduce_mean(
@@ -213,6 +229,9 @@ class YoloModel:
       tf.add_to_collection('losses', bbox_loss)
 
     # add above losses as well as weight decay losses to form the total loss
+    self.class_loss = cls_loss
+    self.conf_loss = conf_loss
+    self.bbox_loss = bbox_loss
     self.loss = tf.add_n(tf.get_collection('losses'), name='total_loss')
 
 
@@ -232,14 +251,19 @@ class YoloModel:
 
     with tf.control_dependencies([loss_averages_op]):
       opt = tf.train.GradientDescentOptimizer(lr)
-      grads = opt.compute_gradients(self.loss)
+      grads_vars = opt.compute_gradients(self.loss, tf.trainable_variables())
 
-    apply_gradient_op = opt.apply_gradients(grads, global_step=self.global_step)
+    # with tf.variable_scope('gradient_clipping') as scope:
+    #   for i, (grad, var) in enumerate(grads_vars):
+    #     if grad is not None:
+    #       grads_vars[i] = (tf.clip_by_norm(grad, 0.1), var)
+
+    apply_gradient_op = opt.apply_gradients(grads_vars, global_step=self.global_step)
 
     for var in tf.trainable_variables():
         tf.histogram_summary(var.op.name, var)
 
-    for grad, var in grads:
+    for grad, var in grads_vars:
       if grad is not None:
         tf.histogram_summary(var.op.name + '/gradients', grad)
 
@@ -251,22 +275,46 @@ class YoloModel:
       self.train_op = tf.no_op(name='train')
 
   def _conv_layer(
-      self, layer_name, inputs, filters, size, stride, alpha=None):
+      self, layer_name, inputs, filters, size, stride, alpha=None, freeze=False):
     mc = self.mc
     if not alpha:
       alpha = mc.LEAKY_COEF
+    use_pretrained_param = False
+    if mc.LOAD_PRETRAINED_MODEL:
+      cw = self.caffemodel_weight
+      if layer_name in cw:
+        use_pretrained_param = True
+        kernel_val = cw[layer_name][0]
+        bias_val = cw[layer_name][1]
+
+    if mc.DEBUG_MODE:
+      print('Input tensor shape to {}: {}'.format(layer_name, inputs.get_shape()))
+
     with tf.variable_scope(layer_name) as scope:
       channels = inputs.get_shape()[3]
+
+      # re-order the caffe kernel with shape [out, in, h, w] -> tf kernel with
+      # shape [h, w, in, out]
+      kernel_init = tf.constant(
+          np.transpose(kernel_val, [2,3,1,0]), dtype=tf.float32) \
+          if use_pretrained_param else None
+      bias_init = tf.constant(bias_val, dtype=tf.float32) \
+          if use_pretrained_param else tf.constant_initializer(0.0)
+
       kernel = _variable_with_weight_decay(
-          'kernels', shape=[size, size, int(channels), filters], stddev=0.1,
-          wd=mc.WEIGHT_DECAY)
-      biases = _variable_on_cpu('biases', [filters], tf.constant_initializer(0.1))
+          'kernels', shape=[size, size, int(channels), filters], stddev=0.001,
+          wd=mc.WEIGHT_DECAY, initializer=kernel_init, trainable=(not freeze))
+
+      biases = _variable_on_cpu('biases', [filters], bias_init, 
+                                trainable=(not freeze))
   
       conv = tf.nn.conv2d(inputs, kernel, [1, 1, 1, 1], padding='SAME',
           name='convolution')
       conv_bias = tf.nn.bias_add(conv, biases, name='bias_add')
   
-      return tf.maximum(alpha*conv_bias, conv_bias)
+      out = tf.maximum(alpha*conv_bias, conv_bias)
+      _activation_summary(out, layer_name)
+      return out
   
   def _pooling_layer(
       self, layer_name, inputs, size, stride):
@@ -282,30 +330,58 @@ class YoloModel:
     mc = self.mc
     if not alpha:
       alpha = mc.LEAKY_COEF
+
+    use_pretrained_param = False
+    if mc.LOAD_PRETRAINED_MODEL:
+      cw = self.caffemodel_weight
+      if layer_name in cw:
+        use_pretrained_param = True
+        kernel_val = cw[layer_name][0]
+        bias_val = cw[layer_name][1]
+
+    if mc.DEBUG_MODE:
+      print('Input tensor shape to {}: {}'.format(layer_name, inputs.get_shape()))
+
     with tf.variable_scope(layer_name) as scope:
       input_shape = inputs.get_shape().as_list()
       if flatten:
         dim = input_shape[1]*input_shape[2]*input_shape[3]
         inputs = tf.reshape(inputs, [-1, dim])
-        # TODO(bichen): figure out which is the right way to reshape/transpose
-        # data.
-        # inputs = tf.reshape(
-        #     tf.transpose(inputs, (0, 3, 1, 2)),
-        #     [-1, dim]
-        # )
+        if use_pretrained_param:
+          kernel_val = np.reshape(
+              np.transpose(
+                  np.reshape(
+                      kernel_val,
+                      (hiddens, input_shape[3], input_shape[1], input_shape[2])
+                  ),
+                  (2, 3, 1, 0)
+              ),
+              (dim, -1)
+          )
+          assert kernel_val.shape == (dim, hiddens), \
+              'kernel shape error at {}'.format(layer_name)
       else:
         dim = input_shape[1]
-  
-      # TODO(bichen): add weight decay
-      weight = _variable_with_weight_decay('weights', shape=[dim, hiddens],
-                                           stddev=0.1, wd=mc.WEIGHT_DECAY)
-      biases = _variable_on_cpu('biases', [hiddens], tf.constant_initializer(0.1))
+        if use_pretrained_param:
+          kernel_val = np.transpose(kernel_val, (1,0))
+
+      kernel_init = tf.constant(kernel_val, dtype=tf.float32) \
+        if use_pretrained_param else None
+      bias_init = tf.constant(bias_val, dtype=tf.float32) \
+          if use_pretrained_param else tf.constant_initializer(0.0)
+
+      weight = _variable_with_weight_decay(
+          'weights', shape=[dim, hiddens], stddev=0.001, wd=mc.WEIGHT_DECAY,
+          initializer=kernel_init)
+      biases = _variable_on_cpu('biases', [hiddens], bias_init)
   
       outputs = tf.nn.bias_add(tf.matmul(inputs, weight), biases)
       if activation:
-        return tf.maximum(alpha*outputs, outputs)
-      else:
-        return outputs
+        outputs = tf.maximum(alpha*outputs, outputs)
+
+      _activation_summary(outputs, layer_name)
+
+      return outputs
 
   def interpret_prediction(self, preds):
     mc = self.mc

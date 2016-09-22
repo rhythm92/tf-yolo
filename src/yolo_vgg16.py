@@ -1,6 +1,6 @@
 # Author: Bichen Wu (bichen@berkeley.edu) 08/25/2016
 
-"""YOLO-tiny."""
+"""YOLO-VGG16 model."""
 
 from __future__ import absolute_import
 from __future__ import division
@@ -10,6 +10,7 @@ import os
 import sys
 
 from config import model_config
+import joblib
 import util
 from easydict import EasyDict as edict
 import numpy as np
@@ -30,20 +31,25 @@ class YoloVGG16Model(YoloModel):
     """Build the VGG-16 model."""
 
     mc = self.mc
+    if mc.LOAD_PRETRAINED_MODEL:
+      assert tf.gfile.Exists(mc.PRETRAINED_MODEL_PATH), \
+          'Cannot find pretrained model at the given path:' \
+          '  {}'.format(mc.PRETRAINED_MODEL_PATH)
+      self.caffemodel_weight = joblib.load(mc.PRETRAINED_MODEL_PATH)
 
     with tf.variable_scope('conv1') as scope:
       conv1_1 = self._conv_layer(
-          'conv1_1', self.image_input, filters=64, size=3, stride=1)
+          'conv1_1', self.image_input, filters=64, size=3, stride=1, freeze=True)
       conv1_2 = self._conv_layer(
-          'conv1_2', conv1_1, filters=64, size=3, stride=1)
+          'conv1_2', conv1_1, filters=64, size=3, stride=1, freeze=True)
       pool1 = self._pooling_layer(
           'pool1', conv1_2, size=2, stride=2)
 
     with tf.variable_scope('conv2') as scope:
       conv2_1 = self._conv_layer(
-          'conv2_1', pool1, filters=128, size=3, stride=1)
+          'conv2_1', pool1, filters=128, size=3, stride=1, freeze=True)
       conv2_2 = self._conv_layer(
-          'conv2_2', conv2_1, filters=128, size=3, stride=1)
+          'conv2_2', conv2_1, filters=128, size=3, stride=1, freeze=True)
       pool2 = self._pooling_layer(
           'pool2', conv2_2, size=2, stride=2)
 

@@ -31,17 +31,23 @@ tf.app.flags.DEFINE_string('year', '2007',
 tf.app.flags.DEFINE_string('image_set', 'train',
                            """Only used for VOC data."""
                            """ Can be train, trainval, val, or test""")
-tf.app.flags.DEFINE_string('train_dir', '/tmp/yolo/train',
+tf.app.flags.DEFINE_string('train_dir', '/tmp/yolo-vgg16/train',
                             """Directory where to write event logs """
                             """and checkpoint.""")
 tf.app.flags.DEFINE_integer('max_steps', 1000000,
                             """Number of batches to run.""")
+tf.app.flags.DEFINE_string('pretrained_model_path',
+                           '/home/eecs/bichen/Proj/YOLO/tf-yolo/data/'
+                           'VGG16/VGG_ILSVRC_16_layers_weights.pkl',
+                            """Path to the pretrained model.""")
 
 
 def train():
   """Train YOLO"""
   with tf.Graph().as_default():
     mc = model_config()
+    mc.PRETRAINED_MODEL_PATH = FLAGS.pretrained_model_path
+
     imdb = pascal_voc(FLAGS.image_set, FLAGS.year, FLAGS.data_path, mc)
     model = YoloVGG16Model(mc)
 
@@ -93,27 +99,34 @@ def train():
       }
 
       if step % 100 == 0:
-        _, loss_value, summary_str = sess.run(
-            [model.train_op, model.loss, summary_op], feed_dict=feed_dict)
+        _, loss_value, summary_str, class_loss, conf_loss, bbox_loss = sess.run(
+            [model.train_op, model.loss, summary_op, model.class_loss,
+              model.conf_loss, model.bbox_loss], 
+            feed_dict=feed_dict)
         summary_writer.add_summary(summary_str, step)
       else:
-        _, loss_value = sess.run([model.train_op, model.loss], feed_dict=feed_dict)
+        _, loss_value, class_loss, conf_loss, bbox_loss = sess.run(
+            [model.train_op, model.loss, model.class_loss, model.conf_loss,
+              model.bbox_loss], 
+            feed_dict=feed_dict)
 
       duration = time.time() - start_time
 
-      # assert not np.isnan(loss_value), 'Model diverged with loss = NaN'
+      assert not np.isnan(loss_value), 'Model diverged with loss = NaN'
 
       if step % 10 == 0:
-        num_examples_per_step = mc.BATCH_SIZE
-        examples_per_sec = num_examples_per_step / duration
+        num_images_per_step = mc.BATCH_SIZE
+        images_per_sec = num_images_per_step / duration
         sec_per_batch = float(duration)
-        format_str = ('%s: step %d, loss = %.2f (%.1f images/sec; %.3f '
+        format_str = ('%s: step %d, loss = %.2f, conf_loss = %.2f, '
+                      'class_loss = %.2f, bbox_loss = %.2f (%.1f images/sec; %.3f '
                       'sec/batch)')
         print (format_str % (datetime.now(), step, loss_value,
-                             examples_per_sec, sec_per_batch))
+                             conf_loss, class_loss, bbox_loss,
+                             images_per_sec, sec_per_batch))
 
       # Save the model checkpoint periodically.
-      if step % 5000 == 1 or (step + 1) == FLAGS.max_steps:
+      if step % 1000 == 1 or (step + 1) == FLAGS.max_steps:
         checkpoint_path = os.path.join(FLAGS.train_dir, 'model.ckpt')
         saver.save(sess, checkpoint_path, global_step=step)
 
