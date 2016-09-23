@@ -27,9 +27,6 @@ def _activation_summary(x, layer_name):
   Returns:
     nothing
   """
-  # Remove 'tower_[0-9]/' from the name in case this is a multi-GPU training
-  # session. This helps the clarity of presentation on tensorboard.
-  # tensor_name = re.sub('%s_[0-9]*/' % TOWER_NAME, '', x.op.name)
   tf.histogram_summary(
       'activation_summary/'+layer_name + '/activations', x)
   tf.scalar_summary(
@@ -253,11 +250,6 @@ class YoloModel:
       opt = tf.train.GradientDescentOptimizer(lr)
       grads_vars = opt.compute_gradients(self.loss, tf.trainable_variables())
 
-    # with tf.variable_scope('gradient_clipping') as scope:
-    #   for i, (grad, var) in enumerate(grads_vars):
-    #     if grad is not None:
-    #       grads_vars[i] = (tf.clip_by_norm(grad, 0.1), var)
-
     apply_gradient_op = opt.apply_gradients(grads_vars, global_step=self.global_step)
 
     for var in tf.trainable_variables():
@@ -274,8 +266,18 @@ class YoloModel:
     with tf.control_dependencies([apply_gradient_op, variables_averages_op]):
       self.train_op = tf.no_op(name='train')
 
+  def _add_viz_graph(self):
+    self.image_to_show = tf.placeholder(
+        tf.float32, [None, self.mc.IMAGE_HEIGHT, self.mc.IMAGE_WIDTH, 3],
+        name='image_to_show'
+    )
+    self.viz_op = tf.image_summary('sample_detection_results',
+        self.image_to_show, collections='image_summary')
+
   def _conv_layer(
-      self, layer_name, inputs, filters, size, stride, alpha=None, freeze=False):
+      self, layer_name, inputs, filters, size, stride, alpha=None, freeze=False,
+      stddev=0.01):
+    # TODO(bichen): add document for conv layer api
     mc = self.mc
     if not alpha:
       alpha = mc.LEAKY_COEF
@@ -302,7 +304,7 @@ class YoloModel:
           if use_pretrained_param else tf.constant_initializer(0.0)
 
       kernel = _variable_with_weight_decay(
-          'kernels', shape=[size, size, int(channels), filters], stddev=0.001,
+          'kernels', shape=[size, size, int(channels), filters], stddev=stddev,
           wd=mc.WEIGHT_DECAY, initializer=kernel_init, trainable=(not freeze))
 
       biases = _variable_on_cpu('biases', [filters], bias_init, 
@@ -326,7 +328,8 @@ class YoloModel:
   
   def _fc_layer(
       self, layer_name, inputs, hiddens, flatten=False, activation=True,
-      alpha=None):
+      alpha=None, stddev=0.01):
+    # TODO(bichen): add document for fc layer api
     mc = self.mc
     if not alpha:
       alpha = mc.LEAKY_COEF
@@ -348,18 +351,24 @@ class YoloModel:
         dim = input_shape[1]*input_shape[2]*input_shape[3]
         inputs = tf.reshape(inputs, [-1, dim])
         if use_pretrained_param:
-          kernel_val = np.reshape(
-              np.transpose(
-                  np.reshape(
-                      kernel_val,
-                      (hiddens, input_shape[3], input_shape[1], input_shape[2])
-                  ),
-                  (2, 3, 1, 0)
-              ),
-              (dim, -1)
-          )
-          assert kernel_val.shape == (dim, hiddens), \
-              'kernel shape error at {}'.format(layer_name)
+          try:
+            kernel_val = np.reshape(
+                np.transpose(
+                    np.reshape(
+                        kernel_val,
+                        (hiddens, input_shape[3], input_shape[1], input_shape[2])
+                    ),
+                    (2, 3, 1, 0)
+                ),
+                (dim, -1)
+            )
+            assert kernel_val.shape == (dim, hiddens), \
+                'kernel shape error at {}'.format(layer_name)
+          except:
+            # Do not use pretrained parameter if shape doesn't match
+            use_pretrained_param = False
+            print ('Shape of the pretrained parameter of {} does not match,'
+                   'Use random initialized parameter'.format(layer_name))
       else:
         dim = input_shape[1]
         if use_pretrained_param:
@@ -371,7 +380,7 @@ class YoloModel:
           if use_pretrained_param else tf.constant_initializer(0.0)
 
       weight = _variable_with_weight_decay(
-          'weights', shape=[dim, hiddens], stddev=0.001, wd=mc.WEIGHT_DECAY,
+          'weights', shape=[dim, hiddens], stddev=stddev, wd=mc.WEIGHT_DECAY,
           initializer=kernel_init)
       biases = _variable_on_cpu('biases', [hiddens], bias_init)
   
@@ -401,46 +410,53 @@ class YoloModel:
 
     x_offset = np.transpose(
         np.reshape(
-            np.array([np.arange(mc.GWIDTH)]*mc.GHEIGHT),
+            np.array([np.arange(mc.GWIDTH) + 0.5]*mc.GHEIGHT),
             (mc.GHEIGHT, mc.GWIDTH)),
         (1, 0)
     )
     boxes[:,:,0] += x_offset
-    boxes[:,:,0] *= mc.IMAGE_WIDTH/mc.GWIDTH
+    boxes[:,:,0] *= float(mc.IMAGE_WIDTH)/mc.GWIDTH
 
     y_offset = np.reshape(
-            np.array([np.arange(mc.GHEIGHT)]*mc.GWIDTH),
+            np.array([np.arange(mc.GHEIGHT) + 0.5]*mc.GWIDTH),
             (mc.GWIDTH, mc.GHEIGHT)
     )
     boxes[:,:,1] += y_offset
-    boxes[:,:,1] *= mc.IMAGE_HEIGHT/mc.GHEIGHT
+    boxes[:,:,1] *= float(mc.IMAGE_HEIGHT)/mc.GHEIGHT
 
-    boxes[:,:,2:] = boxes[:,:,2:]**2
+    boxes[:,:,2] = boxes[:,:,2]**2 * float(mc.IMAGE_WIDTH)
+    boxes[:,:,3] = boxes[:,:,3]**2 * float(mc.IMAGE_HEIGHT)
 
-    probs = class_probs * np.reshape(confidence, (mc.GWEIGHT, mc.GHEIGHT, 1))
+    probs = class_probs * np.reshape(confidence, (mc.GWIDTH, mc.GHEIGHT, 1))
 
     max_probs = np.max(probs, axis=2)
     cls_idx = np.argmax(probs, axis=2)
 
-    filter_probs_idx = np.array(max_probs>mc.PROB_THRESH, dtype='bool')
-    filter_boxes_idx = np.nonzero(filter_probs_idx)
+    filter_probs_mask = np.array(max_probs>mc.PROB_THRESH, dtype='bool')
+    filter_boxes_idx = np.nonzero(filter_probs_mask)
 
     boxes_filtered = boxes[
         filter_boxes_idx[0], filter_boxes_idx[1]]
-    probs_filtered = max_probs[filter_probs_idx]
-    cls_idx_filtered = cls_idx[filter_probs_idx]
+    probs_filtered = max_probs[filter_boxes_idx]
+    cls_idx_filtered = cls_idx[filter_boxes_idx]
 
-    keep = util.NMS(boxes_filtered, probs_filtered. mc.NMS_THRESH)
+    keep = util.nms(boxes_filtered, probs_filtered, mc.NMS_THRESH)
 
-    boxes_filtered = boxes_filtered[keep]
-    probs_filtered = probs_filtered[keep]
-    cls_idx_filtered = cls_idx_filtered[keep]
+    boxes_filtered = [boxes_filtered[i] for i, k in enumerate(keep) if k]
+    probs_filtered = [probs_filtered[i] for i, k in enumerate(keep) if k]
+    cls_idx_filtered = [cls_idx_filtered[i] for i, k in enumerate(keep) if k]
 
-    result = []
-    for i in range(len(boxes_filtered)):
-      result.append([mc.CLASS_NAMES[cls_idx_filtered[i]], 
-                     boxes_filtered[i][0], boxes_filtered[i][1],
-                     boxes_filtered[i][2], boxes_filtered[i][3],
-                     probs_filtered[i]])
+    # trim boxes if outside the image
+    out_boxes = []
+    for box in boxes_filtered:
+      box = util.bbox_transform(box)
 
-    return result
+      box[0] = max(box[0], 0.0)
+      box[1] = max(box[1], 0.0)
+      box[2] = min(box[2], float(mc.IMAGE_WIDTH))
+      box[3] = min(box[3], float(mc.IMAGE_HEIGHT))
+
+      box = util.bbox_transform_inv(box)
+      out_boxes.append(box)
+
+    return cls_idx_filtered, out_boxes, probs_filtered

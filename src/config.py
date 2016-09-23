@@ -48,7 +48,7 @@ def model_config():
   cfg.IMAGE_HEIGHT = 224
 
   # Only plot boxes with probability higher than this threshold
-  cfg.PROB_THRESH = 0.2
+  cfg.PROB_THRESH = 0.1
 
   # Bounding boxes with IOU larger than this are going to be removed
   cfg.NMS_THRESH = 0.5
@@ -64,7 +64,7 @@ def model_config():
   cfg.LOSS_COEF_BBOX = np.sqrt(5.0)
                            
   # reduce step size after this many steps
-  cfg.DECAY_STEPS = 20000
+  cfg.DECAY_STEPS = 2000
 
   # multiply the learning rate by this factor
   cfg.LR_DECAY_FACTOR = 0.1

@@ -8,6 +8,7 @@ import numpy as np
 import xml.etree.ElementTree as ET
 
 from config import model_config
+import util
 
 class imdb(object):
   """Image database."""
@@ -83,15 +84,12 @@ class pascal_voc(imdb):
       bboxes = []
       for obj in objs:
         bbox = obj.find('bndbox')
-        xl = float(bbox.find('xmin').text)
-        xr = float(bbox.find('xmax').text)
-        yb = float(bbox.find('ymin').text)
-        yt = float(bbox.find('ymax').text)
+        xmin = float(bbox.find('xmin').text)
+        xmax = float(bbox.find('xmax').text)
+        ymin = float(bbox.find('ymin').text)
+        ymax = float(bbox.find('ymax').text)
 
-        x = (xl + xr)/2
-        y = (yb + yt)/2
-        w = xr - xl
-        h = yt - yb
+        x, y, w, h = util.bbox_transform_inv([xmin, ymin, xmax, ymax])
 
         cls = self._class_to_idx[obj.find('name').text.lower().strip()]
         bboxes.append([x, y, w, h, cls])
@@ -125,41 +123,51 @@ class pascal_voc(imdb):
     bboxes = []
     labels = []
     gidxes = []
+    orig_bboxes = []
     for i in batch_idx:
       im = cv2.imread(self._image_path_at(i))
       im = im.astype(np.float32, copy=False)
       im -= mc.BGR_MEANS
       orig_h, orig_w, _ = im.shape
       im = cv2.resize(im, (mc.IMAGE_HEIGHT, mc.IMAGE_WIDTH))
+      y_scale = float(mc.IMAGE_HEIGHT)/orig_h
+      x_scale = float(mc.IMAGE_WIDTH)/orig_w
 
       # TODO(bichen): these reference center coordinates are baddly chosen.
-      x_centers = np.arange(mc.GWIDTH)
-      y_centers = np.arange(mc.GHEIGHT)
+      x_centers = np.arange(mc.GWIDTH) + 0.5
+      y_centers = np.arange(mc.GHEIGHT) + 0.5
 
       # normalize bounding boxes
-      orig_bbox = self._rois[i]
+      orig_bbox = self._rois[i][:]
+      orig_bboxes.append(
+          [[b[0]*x_scale,
+            b[1]*y_scale,
+            b[2]*x_scale,
+            b[3]*y_scale] for b in orig_bbox]) # exclude the cls_idx
+
       gidx = []
       cls_idx = []
       bbox = []
-      for b in orig_bbox:
-        b[0] *= float(mc.GWIDTH)/orig_w
-        gidx_x = np.argmin(abs(b[0] - x_centers))
-        b[0] -= x_centers[gidx_x]
+      box = [0]*4
+      for i in range(len(orig_bbox)):
+        box[0] = orig_bbox[i][0]*float(mc.GWIDTH)/orig_w
+        gidx_x = np.argmin(abs(box[0] - x_centers))
+        box[0] -= x_centers[gidx_x]
 
-        b[1] *= float(mc.GHEIGHT)/orig_h
-        gidx_y = np.argmin(abs(b[1] - y_centers))
-        b[1] -= y_centers[gidx_y]
+        box[1] = orig_bbox[i][1]*float(mc.GHEIGHT)/orig_h
+        gidx_y = np.argmin(abs(box[1] - y_centers))
+        box[1] -= y_centers[gidx_y]
 
-        b[2] = np.sqrt(float(b[2])/orig_w)
-        b[3] = np.sqrt(float(b[3])/orig_h)
+        box[2] = np.sqrt(float(orig_bbox[i][2])/orig_w)
+        box[3] = np.sqrt(float(orig_bbox[i][3])/orig_h)
 
-        cls_idx.append(b[4])
+        cls_idx.append(orig_bbox[i][4])
         gidx.append([gidx_x, gidx_y])
-        bbox.append([b[0], b[1], b[2], b[3]])
+        bbox.append(box)
 
       images.append(im)
       bboxes.append(bbox)
       labels.append(cls_idx)
       gidxes.append(gidx)
 
-    return images, bboxes, labels, gidxes
+    return images, bboxes, labels, gidxes, orig_bboxes

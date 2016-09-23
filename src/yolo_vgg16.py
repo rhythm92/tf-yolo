@@ -26,6 +26,7 @@ class YoloVGG16Model(YoloModel):
     self._add_inference_graph()
     self._add_loss_graph()
     self._add_train_graph()
+    self._add_viz_graph()
 
   def _add_inference_graph(self):
     """Build the VGG-16 model."""
@@ -90,6 +91,7 @@ class YoloVGG16Model(YoloModel):
       dropout7 = tf.nn.dropout(fc7, self.keep_prob, name='drop7')
 
     num_output = mc.GWIDTH * mc.GHEIGHT * (mc.CLASSES + (1 + 4))
-    preds = self._fc_layer('output', dropout7, num_output, activation=True)
+    preds = self._fc_layer('output', dropout7, num_output, activation=True,
+                           stddev=0.001)
 
     self.preds = preds

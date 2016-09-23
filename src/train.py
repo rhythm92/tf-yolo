@@ -6,8 +6,10 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
+import cv2
 from datetime import datetime
 import os.path
+import sys
 import time
 
 import numpy as np
@@ -16,7 +18,7 @@ import tensorflow as tf
 
 from config import model_config
 from imdb import pascal_voc
-from util import sparse_to_dense
+from util import sparse_to_dense, bgr_to_rgb, bbox_transform
 from yolo_tiny import YoloTinyModel
 from yolo_vgg16 import YoloVGG16Model
 
@@ -42,6 +44,35 @@ tf.app.flags.DEFINE_string('pretrained_model_path',
                             """Path to the pretrained model.""")
 
 
+def _draw_box(im, box_list, label_list, color=(0,255,0)):
+  for bbox, label in zip(box_list, label_list):
+
+    xmin, ymin, xmax, ymax = [int(b) for b in bbox_transform(bbox)]
+    # draw box
+    cv2.rectangle(im, (xmin, ymin), (xmax, ymax), color, 1)
+    # draw label
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    cv2.putText(im, label, (xmin, ymax), font, 0.3, color, 1)
+
+def _viz_prediction_result(model, images, bboxes, labels, preds):
+  mc = model.mc
+
+  for im, bbox_list, label_list, pred in zip(images, bboxes, labels, preds):
+    # draw ground truth
+    _draw_box(
+        im, bbox_list,
+        [mc.CLASS_NAMES[idx] for idx in label_list],
+        (0, 255, 0))
+
+    # draw prediction
+    pred_cls_list, pred_bbox_list, probs = model.interpret_prediction(pred)
+    _draw_box(
+        im, pred_bbox_list,
+        [mc.CLASS_NAMES[idx]+':(%.2f)'% prob for idx, prob in zip(pred_cls_list,
+                                                                  probs)],
+        (0,0,255))
+
+
 def train():
   """Train YOLO"""
   with tf.Graph().as_default():
@@ -65,7 +96,7 @@ def train():
       start_time = time.time()
 
       # read batch input
-      images, bboxes, labels, gidxes = imdb.read_batch()
+      images, bboxes, labels, gidxes, orig_bboxes = imdb.read_batch()
       label_indices = []
       bbox_indices = []
       bbox_values = []
@@ -99,16 +130,24 @@ def train():
       }
 
       if step % 100 == 0:
-        _, loss_value, summary_str, class_loss, conf_loss, bbox_loss = sess.run(
-            [model.train_op, model.loss, summary_op, model.class_loss,
-              model.conf_loss, model.bbox_loss], 
+        _, loss_value, summary_str, preds= sess.run(
+            [model.train_op, model.loss, summary_op, model.preds],
             feed_dict=feed_dict)
+
         summary_writer.add_summary(summary_str, step)
+
+        preds = preds.tolist()
+        _viz_prediction_result(model, images, orig_bboxes, labels, preds)
+        images = bgr_to_rgb(images)
+
+        viz_summary = sess.run(
+            model.viz_op, feed_dict={model.image_to_show: images})
+
+        summary_writer.add_summary(viz_summary, step)
+
       else:
-        _, loss_value, class_loss, conf_loss, bbox_loss = sess.run(
-            [model.train_op, model.loss, model.class_loss, model.conf_loss,
-              model.bbox_loss], 
-            feed_dict=feed_dict)
+        _, loss_value = sess.run(
+            [model.train_op, model.loss], feed_dict=feed_dict)
 
       duration = time.time() - start_time
 
@@ -118,15 +157,14 @@ def train():
         num_images_per_step = mc.BATCH_SIZE
         images_per_sec = num_images_per_step / duration
         sec_per_batch = float(duration)
-        format_str = ('%s: step %d, loss = %.2f, conf_loss = %.2f, '
-                      'class_loss = %.2f, bbox_loss = %.2f (%.1f images/sec; %.3f '
+        format_str = ('%s: step %d, loss = %.2f (%.1f images/sec; %.3f '
                       'sec/batch)')
         print (format_str % (datetime.now(), step, loss_value,
-                             conf_loss, class_loss, bbox_loss,
                              images_per_sec, sec_per_batch))
+        sys.stdout.flush()
 
       # Save the model checkpoint periodically.
-      if step % 1000 == 1 or (step + 1) == FLAGS.max_steps:
+      if step % 1000 == 0 or (step + 1) == FLAGS.max_steps:
         checkpoint_path = os.path.join(FLAGS.train_dir, 'model.ckpt')
         saver.save(sess, checkpoint_path, global_step=step)
 
