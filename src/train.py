@@ -97,10 +97,7 @@ def train():
 
       # read batch input
       images, bboxes, labels, gidxes, orig_bboxes = imdb.read_batch()
-      label_indices = []
-      bbox_indices = []
-      bbox_values = []
-      conf_indices = mask_indices = []
+      label_indices, bbox_indices, bbox_values, mask_indices = [], [], [], []
       for i in range(len(labels)):
         for j in range(len(labels[i])):
           label_indices.append(
@@ -117,9 +114,6 @@ def train():
           model.bbox_input: sparse_to_dense(
               bbox_indices, [mc.BATCH_SIZE, mc.GWIDTH, mc.GHEIGHT, 4],
               bbox_values),
-          model.conf_input: sparse_to_dense(
-              conf_indices, [mc.BATCH_SIZE, mc.GWIDTH, mc.GHEIGHT], 
-              [1.0]*len(conf_indices)),
           model.input_mask: sparse_to_dense(
               mask_indices, [mc.BATCH_SIZE, mc.GWIDTH, mc.GHEIGHT],
               [1.0]*len(mask_indices)),
@@ -130,21 +124,24 @@ def train():
       }
 
       if step % 100 == 0:
-        _, loss_value, summary_str, preds= sess.run(
-            [model.train_op, model.loss, summary_op, model.preds],
-            feed_dict=feed_dict)
+        op_list = [
+            model.train_op, model.loss, summary_op, model.preds,
+            model.conf_loss, model.bbox_loss, model.class_loss, model.ious
+        ]
+        _, loss_value, summary_str, preds, conf_loss, bbox_loss, class_loss, \
+            ious = sess.run(op_list, feed_dict=feed_dict)
 
-        summary_writer.add_summary(summary_str, step)
-
+        print ('conf_loss: {}, bbox_loss: {}, class_loss: {}, '
+               'max iou: {}'.format(conf_loss, bbox_loss, class_loss,
+                                    np.max(ious)))
         preds = preds.tolist()
         _viz_prediction_result(model, images, orig_bboxes, labels, preds)
         images = bgr_to_rgb(images)
-
         viz_summary = sess.run(
             model.viz_op, feed_dict={model.image_to_show: images})
 
+        summary_writer.add_summary(summary_str, step)
         summary_writer.add_summary(viz_summary, step)
-
       else:
         _, loss_value = sess.run(
             [model.train_op, model.loss], feed_dict=feed_dict)

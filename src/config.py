@@ -51,7 +51,7 @@ def model_config():
   cfg.PROB_THRESH = 0.1
 
   # Bounding boxes with IOU larger than this are going to be removed
-  cfg.NMS_THRESH = 0.5
+  cfg.NMS_THRESH = 0.3
 
   # Pixel mean values (BGR order) as a (1, 1, 3) array. Below is the BGR mean
   # of VGG16
@@ -86,5 +86,11 @@ def model_config():
 
   # print log to console in debug mode
   cfg.DEBUG_MODE = False
+
+  # a small value used to prevent numerical instability
+  cfg.EPSILON = 1e-9
+
+  # whether to use iou value in confidence score regression
+  cfg.USE_IOU_IN_CONF_REG = True
 
   return cfg

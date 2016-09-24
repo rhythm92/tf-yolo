@@ -128,12 +128,11 @@ class pascal_voc(imdb):
       im = cv2.imread(self._image_path_at(i))
       im = im.astype(np.float32, copy=False)
       im -= mc.BGR_MEANS
-      orig_h, orig_w, _ = im.shape
+      orig_h, orig_w, _ = [float(v) for v in im.shape]
       im = cv2.resize(im, (mc.IMAGE_HEIGHT, mc.IMAGE_WIDTH))
-      y_scale = float(mc.IMAGE_HEIGHT)/orig_h
-      x_scale = float(mc.IMAGE_WIDTH)/orig_w
+      y_scale = mc.IMAGE_HEIGHT/orig_h
+      x_scale = mc.IMAGE_WIDTH/orig_w
 
-      # TODO(bichen): these reference center coordinates are baddly chosen.
       x_centers = np.arange(mc.GWIDTH) + 0.5
       y_centers = np.arange(mc.GHEIGHT) + 0.5
 
@@ -150,16 +149,16 @@ class pascal_voc(imdb):
       bbox = []
       box = [0]*4
       for i in range(len(orig_bbox)):
-        box[0] = orig_bbox[i][0]*float(mc.GWIDTH)/orig_w
+        box[0] = orig_bbox[i][0]/orig_w*mc.GWIDTH
         gidx_x = np.argmin(abs(box[0] - x_centers))
         box[0] -= x_centers[gidx_x]
 
-        box[1] = orig_bbox[i][1]*float(mc.GHEIGHT)/orig_h
+        box[1] = orig_bbox[i][1]/orig_h*mc.GHEIGHT
         gidx_y = np.argmin(abs(box[1] - y_centers))
         box[1] -= y_centers[gidx_y]
 
-        box[2] = np.sqrt(float(orig_bbox[i][2])/orig_w)
-        box[3] = np.sqrt(float(orig_bbox[i][3])/orig_h)
+        box[2] = np.sqrt(orig_bbox[i][2]/orig_w)
+        box[3] = np.sqrt(orig_bbox[i][3]/orig_h)
 
         cls_idx.append(orig_bbox[i][4])
         gidx.append([gidx_x, gidx_y])

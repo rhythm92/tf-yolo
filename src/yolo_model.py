@@ -138,9 +138,9 @@ class YoloModel:
         name='bbox_input'
     )
     # Tensor used to represent confidence scores. 
-    self.conf_input = tf.placeholder(
-        tf.float32, [self.mc.BATCH_SIZE, self.mc.GWIDTH, self.mc.GHEIGHT],
-        name='confidence_score_input'
+    self.ious = tf.Variable(
+        initial_value=np.zeros((self.mc.BATCH_SIZE, self.mc.GWIDTH, self.mc.GHEIGHT)),
+        trainable=False, name='iou', dtype=tf.float32
     )
     # Tensor used to represent labels
     self.labels = tf.placeholder(
@@ -180,6 +180,52 @@ class YoloModel:
       )
       _activation_summary(pred_boxes, 'pred_bbox')
 
+    with tf.variable_scope('IOU'):
+      def tensor_bbox_transform(bbox):
+        bbox = tf.unpack(bbox, axis=3)
+
+        with tf.variable_scope('scale_wh') as scope:
+          bbox[2] = tf.square(bbox[2]) * mc.GWIDTH
+          bbox[3] = tf.square(bbox[3]) * mc.GHEIGHT
+
+        with tf.variable_scope('bbox_transform') as scope:
+          cx, cy, w, h = bbox
+          bbox[0] = tf.identity(cx - w/2, name='xmin')
+          bbox[1] = tf.identity(cy - h/2, name='ymin')
+          bbox[2] = tf.identity(cx + w/2, name='xmax')
+          bbox[3] = tf.identity(cy + h/2, name='ymax')
+
+        return bbox
+
+      def tensor_iou(bbox1, bbox2):
+        with tf.variable_scope('intersection'):
+          xmin = tf.maximum(bbox1[0], bbox2[0], name='xmin')
+          xmax = tf.minimum(bbox1[2], bbox2[2], name='xmax')
+          ymin = tf.maximum(bbox1[1], bbox2[1], name='ymin')
+          ymax = tf.minimum(bbox1[3], bbox2[3], name='ymax')
+
+          w = tf.maximum(0.0, xmax-xmin, name='inter_w')
+          h = tf.maximum(0.0, ymax-ymin, name='inter_h')
+          intersection = tf.mul(w, h, name='intersection')
+
+        with tf.variable_scope('union'):
+          w1 = tf.sub(bbox1[2], bbox1[0], name='w1')
+          h1 = tf.sub(bbox1[3], bbox1[1], name='h1')
+          w2 = tf.sub(bbox2[2], bbox2[0], name='w2')
+          h2 = tf.sub(bbox2[3], bbox2[1], name='h2')
+
+          union = tf.identity(
+              w1*h1 + w2*h2 - intersection, name='union')
+
+        return (intersection/(union+mc.EPSILON))*self.input_mask
+
+      self.ious = self.ious.assign(
+          tensor_iou(
+              tensor_bbox_transform(pred_boxes),
+              tensor_bbox_transform(self.bbox_input)
+          )
+      )
+
     with tf.variable_scope('class_regression') as scope:
       cls_loss = tf.reduce_mean(
           tf.reduce_sum(
@@ -197,10 +243,11 @@ class YoloModel:
       tf.add_to_collection('losses', cls_loss)
 
     with tf.variable_scope('confidence_score_regression') as scope:
+      conf = self.ious if mc.USE_IOU_IN_CONF_REG else self.input_mask
       conf_loss = tf.reduce_mean(
           tf.reduce_sum(
               tf.square(
-                  (pred_conf - self.conf_input)
+                  (pred_conf - conf)
                   * (self.input_mask + (1 - self.input_mask)*mc.LOSS_COEF_NOOBJ)
               ),
               reduction_indices=[1,2]
