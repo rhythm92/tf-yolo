@@ -68,7 +68,7 @@ def _viz_prediction_result(model, images, bboxes, labels, preds):
     pred_cls_list, pred_bbox_list, probs = model.interpret_prediction(pred)
     _draw_box(
         im, pred_bbox_list,
-        [mc.CLASS_NAMES[idx]+':(%.2f)'% prob for idx, prob in zip(pred_cls_list,
+        [mc.CLASS_NAMES[idx]+': (%.2f)'% prob for idx, prob in zip(pred_cls_list,
                                                                   probs)],
         (0,0,255))
 

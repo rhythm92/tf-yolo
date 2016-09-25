@@ -137,7 +137,8 @@ class YoloModel:
         tf.float32, [self.mc.BATCH_SIZE, self.mc.GWIDTH, self.mc.GHEIGHT, 4],
         name='bbox_input'
     )
-    # Tensor used to represent confidence scores. 
+    # Tensor used to represent confidence scores, a.k.a, iou between predicted
+    # bbox and gt bbox
     self.ious = tf.Variable(
         initial_value=np.zeros((self.mc.BATCH_SIZE, self.mc.GWIDTH, self.mc.GHEIGHT)),
         trainable=False, name='iou', dtype=tf.float32
@@ -296,6 +297,10 @@ class YoloModel:
     with tf.control_dependencies([loss_averages_op]):
       opt = tf.train.GradientDescentOptimizer(lr)
       grads_vars = opt.compute_gradients(self.loss, tf.trainable_variables())
+
+    with tf.variable_scope('clip_gradient') as scope:
+      for i, (grad, var) in enumerate(grads_vars):
+        grads_vars[i] = (tf.clip_by_norm(grad, 1), var)
 
     apply_gradient_op = opt.apply_gradients(grads_vars, global_step=self.global_step)
 

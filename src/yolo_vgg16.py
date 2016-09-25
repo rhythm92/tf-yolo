@@ -91,7 +91,7 @@ class YoloVGG16Model(YoloModel):
       dropout7 = tf.nn.dropout(fc7, self.keep_prob, name='drop7')
 
     num_output = mc.GWIDTH * mc.GHEIGHT * (mc.CLASSES + (1 + 4))
-    preds = self._fc_layer('output', dropout7, num_output, activation=True,
+    preds = self._fc_layer('output', dropout7, num_output, activation=False,
                            stddev=0.001)
 
     self.preds = preds
